@@ -1,0 +1,4 @@
+# /etc/sudoers.d/zabbix-mailcow   (chmod 440, sprawdz: visudo -cf /etc/sudoers.d/zabbix-mailcow)
+# Agent Zabbixa moze uruchomic jako root WYLACZNIE ten skrypt (tylko odczyt).
+Defaults:zabbix !requiretty
+zabbix ALL=(root) NOPASSWD: /usr/local/bin/mailcow_mail.sh

@@ -1,0 +1,873 @@
+zabbix_export:
+  version: '6.0'
+  date: '2026-11-06T12:00:00Z'
+  groups:
+    - uuid: 640dc27249724cf686fcb6b103049472
+      name: Templates/Applications
+  templates:
+    - uuid: 80af825f96824dff8733e3c42e391b9f
+      template: Mailcow by Zabbix agent
+      name: Mailcow by Zabbix agent
+      description: 'Monitoring serwerow pocztowych mailcow-dockerized: kolejka i ruch Postfixa, kontenery, backup, reputacja (RBL, PTR/FCrDNS, Microsoft SNDS, odrzucenia reputacyjne), rekordy SPF/DKIM/DMARC/MX, certyfikaty TLS i dostepnosc portow.
+
+        Wymaga skryptow mailrep.sh i mailcow_mail.sh, pliku UserParameter i wpisu sudoers - patrz README.md.
+
+        Laczyc z szablonem ''Linux by Zabbix agent'' (CPU/RAM/dysk).'
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 4abfd376992c40b2b31f578d46cd6e4f
+          name: 'Postfix: queue size'
+          key: mailcow.mail[queue_total]
+          delay: 5m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Liczba wiadomosci w kolejce Postfixa (postfix-mailcow). -1 = brak dostepu do dockera/kontenera.
+          tags:
+            - tag: component
+              value: queue
+          triggers:
+            - uuid: 2b575a4d9d3248a39dce4ca800f35eb7
+              expression: min(/Mailcow by Zabbix agent/mailcow.mail[queue_total],15m)>{$MAIL.QUEUE.MAX}
+              name: 'Mailcow: Postfix queue > {$MAIL.QUEUE.MAX} for 15m'
+              priority: HIGH
+              description: 'Rosnaca kolejka zwykle oznacza problem z dostarczaniem albo przejete konto wysylajace spam. Sprawdz: docker compose exec postfix-mailcow mailq'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: performance
+            - uuid: 551a1c461061436eabe9b2c013005a06
+              expression: last(/Mailcow by Zabbix agent/mailcow.mail[queue_total])<0
+              name: 'Mailcow: cannot read mail metrics (docker/sudo/postfix-mailcow)'
+              priority: WARNING
+              description: 'Skrypt mailcow_mail.sh zwraca -1: brak dockera, brak kontenera postfix-mailcow albo brak wpisu sudoers.'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 2d719519b4894d928a8da7300690ac0b
+          name: 'Postfix: deferred messages'
+          key: mailcow.mail[queue_deferred]
+          delay: 5m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci odroczone (deferred) - serwery docelowe odrzucaja tymczasowo.
+          tags:
+            - tag: component
+              value: queue
+          triggers:
+            - uuid: 3d7a9c31e46640b18e8a1195b5b587b8
+              expression: min(/Mailcow by Zabbix agent/mailcow.mail[queue_deferred],30m)>{$MAIL.DEFERRED.MAX}
+              name: 'Mailcow: deferred queue > {$MAIL.DEFERRED.MAX} for 30m'
+              priority: AVERAGE
+              description: 'Sprawdz przyczyny w logu (np. blokady reputacyjne Microsoft/Gmail): docker compose logs postfix-mailcow | grep deferred'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: performance
+        - uuid: 661d468ab56549b2924b7bc48f46ac65
+          name: 'Postfix: outbound sent (10 min)'
+          key: mailcow.mail[sent,10]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci wyslane na zewnatrz w ostatnich 10 min (bez lokalnych dostarczen do dovecot).
+          tags:
+            - tag: component
+              value: mailflow
+          triggers:
+            - uuid: cb78feeddeb34f6086a9bed45c61a734
+              expression: last(/Mailcow by Zabbix agent/mailcow.mail[sent,10])>{$MAIL.SENT.MAX}
+              name: 'Mailcow: unusually high outbound volume (>{$MAIL.SENT.MAX}/10 min)'
+              priority: HIGH
+              description: Mozliwe przejete konto rozsylajace spam - grozi wpisem na listy RBL. Sprawdz nadawcow w panelu mailcow (Logs > Postfix) i ewentualnie zablokuj konto.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+        - uuid: 1f57237a7ac24acd8477ebeb25eab953
+          name: 'Postfix: bounced (10 min)'
+          key: mailcow.mail[bounced,10]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci trwale odrzucone (status=bounced) w ostatnich 10 min.
+          tags:
+            - tag: component
+              value: mailflow
+          triggers:
+            - uuid: 2906d05be8a34d5c89e81262f8a06a49
+              expression: last(/Mailcow by Zabbix agent/mailcow.mail[bounced,10])>{$MAIL.BOUNCED.MAX}
+              name: 'Mailcow: many bounces (>{$MAIL.BOUNCED.MAX}/10 min)'
+              priority: WARNING
+              description: Duza liczba odbic - sprawdz, czy nie dotycza jednego nadawcy (spam) lub jednej domeny docelowej.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: performance
+        - uuid: 4ee501b8b5dc4837889f2c207d9f68b9
+          name: 'Postfix: reputation rejects (10 min)'
+          key: mailcow.mail[rejects_reputation,10]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Odrzucenia przez serwery docelowe z powodow reputacji/list blokujacych (Microsoft S3140/S3150, Gmail 5.7.26/4.7.0, Spamhaus, blocklist...).
+          tags:
+            - tag: component
+              value: reputation
+          triggers:
+            - uuid: c601be8dd2f34195b7fcbe3fbdfee3a2
+              expression: last(/Mailcow by Zabbix agent/mailcow.mail[rejects_reputation,10])>0
+              name: 'Mailcow: remote servers reject mail for reputation reasons'
+              priority: AVERAGE
+              description: 'Serwery docelowe odrzucaja poczte powolujac sie na reputacje/listy blokujace. Sprawdz log: docker compose logs --since 1h postfix-mailcow | grep -iE ''block|reputation|S3150|5.7.26'''
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: reputation
+        - uuid: efe639f247d5437d8b80d425f876d19c
+          name: 'Mailcow: containers running'
+          key: mailcow.mail[containers_running]
+          delay: 2m
+          history: 31d
+          value_type: FLOAT
+          description: Liczba dzialajacych kontenerow mailcow (*-mailcow-*).
+          tags:
+            - tag: component
+              value: containers
+        - uuid: d4f8aa3c1bbb4260917bfc8d47612f15
+          name: 'Mailcow: containers down/unhealthy'
+          key: mailcow.mail[containers_down]
+          delay: 2m
+          history: 31d
+          value_type: FLOAT
+          description: Kontenery mailcow zatrzymane, restartujace sie lub w stanie unhealthy.
+          tags:
+            - tag: component
+              value: containers
+          triggers:
+            - uuid: c4175d013634457d93f7b99b6cc0b26e
+              expression: min(/Mailcow by Zabbix agent/mailcow.mail[containers_down],5m)>0
+              name: 'Mailcow: {ITEM.LASTVALUE1} container(s) down or unhealthy'
+              priority: HIGH
+              description: 'Sprawdz: cd /opt/mailcow-dockerized && docker compose ps'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 80e6097dc4ea409aa27c58ef96ded808
+          name: 'Mailcow: last backup age'
+          key: mailcow.mail[backup_age,{$MAILCOW.BACKUP.DIR}]
+          delay: 30m
+          history: 31d
+          value_type: FLOAT
+          units: h
+          description: Wiek najnowszego katalogu mailcow-* w {$MAILCOW.BACKUP.DIR} (h). -1 = brak backupu/katalogu.
+          tags:
+            - tag: component
+              value: backup
+          triggers:
+            - uuid: 0d4bd1f6dcd14826aacf1d5c603880d7
+              expression: last(/Mailcow by Zabbix agent/mailcow.mail[backup_age,{$MAILCOW.BACKUP.DIR}])>{$MAILCOW.BACKUP.MAXAGE} or last(/Mailcow by Zabbix agent/mailcow.mail[backup_age,{$MAILCOW.BACKUP.DIR}])<0
+              name: 'Mailcow: no backup newer than {$MAILCOW.BACKUP.MAXAGE}h in {$MAILCOW.BACKUP.DIR}'
+              priority: HIGH
+              description: Ostatni backup jest za stary albo go nie ma. Sprawdz cron/timer backupu (helper-scripts/backup_and_restore.sh) i miejsce na dysku.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: backup
+        - uuid: 961086e3b22b435fa8f895b5becac1f5
+          name: 'DNS: PTR of {$MAIL.IP}'
+          key: mailrep.ptr[{$MAIL.IP},{$DNS.RESOLVER}]
+          delay: 1h
+          history: 90d
+          value_type: CHAR
+          description: Rekord PTR (rDNS) adresu IP serwera. Musi wskazywac {$MAIL.HOSTNAME}.
+          tags:
+            - tag: component
+              value: dns
+          triggers:
+            - uuid: 69ea7c6f2cc54cf2b60e5f54999c5f0a
+              expression: find(/Mailcow by Zabbix agent/mailrep.ptr[{$MAIL.IP},{$DNS.RESOLVER}],,"regexp","^{$MAIL.HOSTNAME}$")=0 and find(/Mailcow by Zabbix agent/mailrep.ptr[{$MAIL.IP},{$DNS.RESOLVER}],,"like","DNS_ERROR")=0
+              name: 'Mailcow: PTR of {$MAIL.IP} is not {$MAIL.HOSTNAME}'
+              priority: AVERAGE
+              description: Brak zgodnego rDNS powoduje odrzucanie lub spam-folder u wielu odbiorcow. PTR ustawia sie u dostawcy serwera (Infomaniak/Hetzner).
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: reputation
+        - uuid: 3299a82515054cc597f7e83598265181
+          name: 'DNS: {$MAIL.HOSTNAME} resolves to {$MAIL.IP}'
+          key: mailrep.fcrdns[{$MAIL.HOSTNAME},{$MAIL.IP},{$DNS.RESOLVER}]
+          delay: 1h
+          history: 31d
+          description: 'Forward-confirmed rDNS: rekord A nazwy hosta zawiera IP serwera.'
+          valuemap:
+            name: Mailcow yes/no
+          tags:
+            - tag: component
+              value: dns
+          triggers:
+            - uuid: 4cce3ca9f08b412e8f9176f08abacbd5
+              expression: max(/Mailcow by Zabbix agent/mailrep.fcrdns[{$MAIL.HOSTNAME},{$MAIL.IP},{$DNS.RESOLVER}],#2)=0
+              name: 'Mailcow: {$MAIL.HOSTNAME} does not resolve to {$MAIL.IP}'
+              priority: AVERAGE
+              description: Rekord A hosta pocztowego nie wskazuje na IP serwera (FCrDNS nie przejdzie).
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: reputation
+        - uuid: ec408131b5e64b62b1844019aa504997
+          name: 'TLS: HTTPS certificate days left'
+          key: mailrep.certdays[{$MAIL.HOSTNAME},443]
+          delay: 6h
+          history: 31d
+          value_type: FLOAT
+          units: d
+          description: Dni do wygasniecia certyfikatu HTTPS na {$MAIL.HOSTNAME}:443. -1 = brak polaczenia.
+          tags:
+            - tag: component
+              value: tls
+          triggers:
+            - uuid: 327b700b94244af4ac4a99bbc6264455
+              expression: last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},443])>=0 and last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},443])<{$CERT.EXPIRY.WARN}
+              name: 'Mailcow: HTTPS certificate expires in {ITEM.LASTVALUE1} days'
+              priority: AVERAGE
+              description: Certyfikat mailcow (ACME) powinien odnawiac sie automatycznie - sprawdz kontener acme-mailcow.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: 02d611b491154d3d8597c0226eaaf6dd
+              expression: max(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},443],#3)<0
+              name: 'Mailcow: cannot check HTTPS certificate on port 443'
+              priority: WARNING
+              description: Brak polaczenia TLS z serwera monitorowanego do samego siebie (port zamkniety, hairpin NAT, timeout).
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: bf56e1d182434ace803b674b4492b758
+          name: 'TLS: SMTP STARTTLS certificate days left'
+          key: mailrep.certdays[{$MAIL.HOSTNAME},25,smtp]
+          delay: 6h
+          history: 31d
+          value_type: FLOAT
+          units: d
+          description: Dni do wygasniecia certyfikatu SMTP STARTTLS na {$MAIL.HOSTNAME}:25. -1 = brak polaczenia.
+          tags:
+            - tag: component
+              value: tls
+          triggers:
+            - uuid: b837c596c8834f98ac24ed7c081e6813
+              expression: last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},25,smtp])>=0 and last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},25,smtp])<{$CERT.EXPIRY.WARN}
+              name: 'Mailcow: SMTP STARTTLS certificate expires in {ITEM.LASTVALUE1} days'
+              priority: AVERAGE
+              description: Certyfikat mailcow (ACME) powinien odnawiac sie automatycznie - sprawdz kontener acme-mailcow.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: 28ff78c45bac4638afc2793a4044d475
+              expression: max(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},25,smtp],#3)<0
+              name: 'Mailcow: cannot check SMTP STARTTLS certificate on port 25'
+              priority: WARNING
+              description: Brak polaczenia TLS z serwera monitorowanego do samego siebie (port zamkniety, hairpin NAT, timeout).
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 11ca8fe689094b51993f1c1d68c1e393
+          name: 'TLS: Submission STARTTLS certificate days left'
+          key: mailrep.certdays[{$MAIL.HOSTNAME},587,smtp]
+          delay: 6h
+          history: 31d
+          value_type: FLOAT
+          units: d
+          description: Dni do wygasniecia certyfikatu Submission STARTTLS na {$MAIL.HOSTNAME}:587. -1 = brak polaczenia.
+          tags:
+            - tag: component
+              value: tls
+          triggers:
+            - uuid: 80a85ab4a4854662a600b30cf7e0b5f6
+              expression: last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},587,smtp])>=0 and last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},587,smtp])<{$CERT.EXPIRY.WARN}
+              name: 'Mailcow: Submission STARTTLS certificate expires in {ITEM.LASTVALUE1} days'
+              priority: AVERAGE
+              description: Certyfikat mailcow (ACME) powinien odnawiac sie automatycznie - sprawdz kontener acme-mailcow.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: 4035548d967044458539f56c3a0ee1f6
+              expression: max(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},587,smtp],#3)<0
+              name: 'Mailcow: cannot check Submission STARTTLS certificate on port 587'
+              priority: WARNING
+              description: Brak polaczenia TLS z serwera monitorowanego do samego siebie (port zamkniety, hairpin NAT, timeout).
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 9705397fe561499f9267b5b63daaa2e5
+          name: 'TLS: IMAPS certificate days left'
+          key: mailrep.certdays[{$MAIL.HOSTNAME},993]
+          delay: 6h
+          history: 31d
+          value_type: FLOAT
+          units: d
+          description: Dni do wygasniecia certyfikatu IMAPS na {$MAIL.HOSTNAME}:993. -1 = brak polaczenia.
+          tags:
+            - tag: component
+              value: tls
+          triggers:
+            - uuid: 40e4feb078514bb9a4439e7200ad32b5
+              expression: last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},993])>=0 and last(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},993])<{$CERT.EXPIRY.WARN}
+              name: 'Mailcow: IMAPS certificate expires in {ITEM.LASTVALUE1} days'
+              priority: AVERAGE
+              description: Certyfikat mailcow (ACME) powinien odnawiac sie automatycznie - sprawdz kontener acme-mailcow.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: edf89b6c041e4c1c968ef97b2173216c
+              expression: max(/Mailcow by Zabbix agent/mailrep.certdays[{$MAIL.HOSTNAME},993],#3)<0
+              name: 'Mailcow: cannot check IMAPS certificate on port 993'
+              priority: WARNING
+              description: Brak polaczenia TLS z serwera monitorowanego do samego siebie (port zamkniety, hairpin NAT, timeout).
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: e1d561cc0c6b43c5a2af6a79e99940ca
+          name: 'Service: SMTP port 25'
+          type: SIMPLE
+          key: net.tcp.service[smtp,{$MAIL.HOSTNAME},25]
+          delay: 1m
+          history: 31d
+          description: Dostepnosc SMTP z serwera/proxy Zabbix (simple check).
+          valuemap:
+            name: Mailcow yes/no
+          tags:
+            - tag: component
+              value: services
+          triggers:
+            - uuid: 7e07922841864de19a3166a126abfeff
+              expression: max(/Mailcow by Zabbix agent/net.tcp.service[smtp,{$MAIL.HOSTNAME},25],#3)=0
+              name: 'Mailcow: SMTP (port 25) is not reachable'
+              priority: HIGH
+              description: Usluga nie odpowiada 3 razy z rzedu. Sprawdz kontenery, firewall i blokady portow u dostawcy.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: a628a9b657104b059c621b6b77562d24
+          name: 'Service: SMTPS port 465'
+          type: SIMPLE
+          key: net.tcp.service[tcp,{$MAIL.HOSTNAME},465]
+          delay: 1m
+          history: 31d
+          description: Dostepnosc SMTPS z serwera/proxy Zabbix (simple check).
+          valuemap:
+            name: Mailcow yes/no
+          tags:
+            - tag: component
+              value: services
+          triggers:
+            - uuid: b432d212693f4253a8721dc508f8c9c5
+              expression: max(/Mailcow by Zabbix agent/net.tcp.service[tcp,{$MAIL.HOSTNAME},465],#3)=0
+              name: 'Mailcow: SMTPS (port 465) is not reachable'
+              priority: AVERAGE
+              description: Usluga nie odpowiada 3 razy z rzedu. Sprawdz kontenery, firewall i blokady portow u dostawcy.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 849dc865d82045ffb9d8ac2ca4cb6bcd
+          name: 'Service: Submission port 587'
+          type: SIMPLE
+          key: net.tcp.service[tcp,{$MAIL.HOSTNAME},587]
+          delay: 1m
+          history: 31d
+          description: Dostepnosc Submission z serwera/proxy Zabbix (simple check).
+          valuemap:
+            name: Mailcow yes/no
+          tags:
+            - tag: component
+              value: services
+          triggers:
+            - uuid: 364d36782ce948848d605a57a0c902a6
+              expression: max(/Mailcow by Zabbix agent/net.tcp.service[tcp,{$MAIL.HOSTNAME},587],#3)=0
+              name: 'Mailcow: Submission (port 587) is not reachable'
+              priority: AVERAGE
+              description: Usluga nie odpowiada 3 razy z rzedu. Sprawdz kontenery, firewall i blokady portow u dostawcy.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 9b5753d55db547c4b2d6924d66c965b9
+          name: 'Service: IMAPS port 993'
+          type: SIMPLE
+          key: net.tcp.service[tcp,{$MAIL.HOSTNAME},993]
+          delay: 1m
+          history: 31d
+          description: Dostepnosc IMAPS z serwera/proxy Zabbix (simple check).
+          valuemap:
+            name: Mailcow yes/no
+          tags:
+            - tag: component
+              value: services
+          triggers:
+            - uuid: 2dc40f7d9eb24f89850c3b7c60154bbc
+              expression: max(/Mailcow by Zabbix agent/net.tcp.service[tcp,{$MAIL.HOSTNAME},993],#3)=0
+              name: 'Mailcow: IMAPS (port 993) is not reachable'
+              priority: HIGH
+              description: Usluga nie odpowiada 3 razy z rzedu. Sprawdz kontenery, firewall i blokady portow u dostawcy.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 34b855df4b31494eaf382a39eb94cd78
+          name: 'Service: HTTPS (webmail/admin) port 443'
+          type: SIMPLE
+          key: net.tcp.service[https,{$MAIL.HOSTNAME},443]
+          delay: 1m
+          history: 31d
+          description: Dostepnosc HTTPS (webmail/admin) z serwera/proxy Zabbix (simple check).
+          valuemap:
+            name: Mailcow yes/no
+          tags:
+            - tag: component
+              value: services
+          triggers:
+            - uuid: 1ea7a18dc2484817a33edb58696c495c
+              expression: max(/Mailcow by Zabbix agent/net.tcp.service[https,{$MAIL.HOSTNAME},443],#3)=0
+              name: 'Mailcow: HTTPS (webmail/admin) (port 443) is not reachable'
+              priority: HIGH
+              description: Usluga nie odpowiada 3 razy z rzedu. Sprawdz kontenery, firewall i blokady portow u dostawcy.
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: d6b025bc267248e6ab5f684ae2e02c45
+          name: 'Microsoft SNDS: blocked IP status'
+          type: HTTP_AGENT
+          key: mailcow.snds.ipstatus
+          delay: 6h
+          history: 90d
+          value_type: TEXT
+          status: DISABLED
+          description: Lista IP zablokowanych przez Microsoft (Outlook/Hotmail) z SNDS Automated Data Access. Pusta odpowiedz = brak blokad. Wlacz po ustawieniu {$SNDS.KEY}.
+          url: https://sendersupport.olc.protection.outlook.com/snds/ipStatus.aspx?key={$SNDS.KEY}
+          timeout: 15s
+          tags:
+            - tag: component
+              value: reputation
+          triggers:
+            - uuid: 5d070be929b641d6a2e65b896751bd81
+              expression: find(/Mailcow by Zabbix agent/mailcow.snds.ipstatus,,"regexp","[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+")=1
+              name: 'Mailcow: Microsoft SNDS reports blocked IP'
+              priority: HIGH
+              description: 'Microsoft blokuje IP serwera. Szczegoly w panelu SNDS; wniosek o odblokowanie: https://sender.office.com'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: reputation
+      discovery_rules:
+        - uuid: f82508b6a0d247b4839c04116b6c4020
+          name: RBL (IP) - critical lists
+          key: mailrep.discovery[zones,"{$RBL.IP.ZONES}"]
+          delay: 1h
+          lifetime: 7d
+          description: Listy z makra {$RBL.IP.ZONES}, rozdzielone przecinkami.
+          item_prototypes:
+            - uuid: 8f716a12e1264c52aa90f52d6559f7b0
+              name: 'RBL: {$MAIL.IP} on {#RBL}'
+              key: mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER}]
+              delay: '{$RBL.CHECK.INTERVAL}'
+              history: 90d
+              description: 0 = czysto, 1 = NA LISCIE, 2 = blad zapytania (np. odmowa dla publicznego resolvera).
+              valuemap:
+                name: Mailcow RBL status
+              tags:
+                - tag: component
+                  value: reputation
+                - tag: rbl
+                  value: '{#RBL}'
+              trigger_prototypes:
+                - uuid: f07fcbf5748648269e608b9be50dc326
+                  expression: last(/Mailcow by Zabbix agent/mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER}])=1
+                  name: 'Mailcow: {$MAIL.IP} is listed on {#RBL}'
+                  priority: HIGH
+                  manual_close: 'YES'
+                  description: Sprawdz przyczyne (przejete konto? otwarty relay?), usun ja i zlec delisting na stronie listy.
+                  tags:
+                    - tag: scope
+                      value: reputation
+                - uuid: 71fc6fc1ea97467db29b8b5b15eca096
+                  expression: min(/Mailcow by Zabbix agent/mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER}],2h)=2
+                  name: 'Mailcow: RBL check {#RBL} for {$MAIL.IP} is failing'
+                  priority: WARNING
+                  manual_close: 'YES'
+                  description: Lista odrzuca zapytania (Spamhaus/URIBL przez publiczny DNS - uzyj klucza DQS) albo makro {$MAIL.IP}/{$MAIL.DOMAINS} nie jest ustawione.
+                  tags:
+                    - tag: scope
+                      value: reputation
+          graph_prototypes:
+            - uuid: 10cf2e1597f0465f8e4cc086f2b0fc43
+              name: 'RBL status: {$MAIL.IP} on {#RBL}'
+              ymin_type_1: FIXED
+              ymax_type_1: FIXED
+              yaxismax: '2'
+              graph_items:
+                - color: E53935
+                  item:
+                    host: Mailcow by Zabbix agent
+                    key: mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER}]
+        - uuid: c34c02606ac0482d98581035ab99bd29
+          name: RBL (IP) - informational lists
+          key: mailrep.discovery[zones,"{$RBL.IP.ZONES.LOW}"]
+          delay: 1h
+          lifetime: 7d
+          description: Listy z makra {$RBL.IP.ZONES.LOW}, rozdzielone przecinkami.
+          item_prototypes:
+            - uuid: 9a210b8f64c14347a85561a99f8eef77
+              name: 'RBL: {$MAIL.IP} on {#RBL} (informational)'
+              key: mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER},low]
+              delay: '{$RBL.CHECK.INTERVAL}'
+              history: 90d
+              description: 0 = czysto, 1 = NA LISCIE, 2 = blad zapytania (np. odmowa dla publicznego resolvera).
+              valuemap:
+                name: Mailcow RBL status
+              tags:
+                - tag: component
+                  value: reputation
+                - tag: rbl
+                  value: '{#RBL}'
+              trigger_prototypes:
+                - uuid: f06c7c2589a0410e81f9a80d21a4e445
+                  expression: last(/Mailcow by Zabbix agent/mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER},low])=1
+                  name: 'Mailcow: {$MAIL.IP} is listed on {#RBL} (informational)'
+                  priority: WARNING
+                  manual_close: 'YES'
+                  description: Sprawdz przyczyne (przejete konto? otwarty relay?), usun ja i zlec delisting na stronie listy.
+                  tags:
+                    - tag: scope
+                      value: reputation
+                - uuid: db801a7940cf4027bab4f7b9eae9d626
+                  expression: min(/Mailcow by Zabbix agent/mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER},low],2h)=2
+                  name: 'Mailcow: RBL check {#RBL} for {$MAIL.IP} is failing (informational)'
+                  priority: WARNING
+                  manual_close: 'YES'
+                  description: Lista odrzuca zapytania (Spamhaus/URIBL przez publiczny DNS - uzyj klucza DQS) albo makro {$MAIL.IP}/{$MAIL.DOMAINS} nie jest ustawione.
+                  tags:
+                    - tag: scope
+                      value: reputation
+          graph_prototypes:
+            - uuid: e3c2e88ff1104f1fb0dfca0a36995c2f
+              name: 'RBL status: {$MAIL.IP} on {#RBL} (informational)'
+              ymin_type_1: FIXED
+              ymax_type_1: FIXED
+              yaxismax: '2'
+              graph_items:
+                - color: E53935
+                  item:
+                    host: Mailcow by Zabbix agent
+                    key: mailrep.rbl[{$MAIL.IP},{#RBL},{$DNS.RESOLVER},low]
+        - uuid: 319eeada870040ba9d3ac4e7e0eb7c39
+          name: RBL (domains)
+          key: mailrep.discovery[domainzones,"{$MAIL.DOMAINS}","{$RBL.DOMAIN.ZONES}"]
+          delay: 1h
+          lifetime: 7d
+          description: Listy z makra {$RBL.DOMAIN.ZONES}, rozdzielone przecinkami.
+          item_prototypes:
+            - uuid: 69bddf0f1aa04bad8899ce4628dc7d95
+              name: 'RBL: {#DOMAIN} on {#RBL}'
+              key: mailrep.rbl[{#DOMAIN},{#RBL},{$DNS.RESOLVER}]
+              delay: '{$RBL.CHECK.INTERVAL}'
+              history: 90d
+              description: 0 = czysto, 1 = NA LISCIE, 2 = blad zapytania (np. odmowa dla publicznego resolvera).
+              valuemap:
+                name: Mailcow RBL status
+              tags:
+                - tag: component
+                  value: reputation
+                - tag: rbl
+                  value: '{#RBL}'
+              trigger_prototypes:
+                - uuid: 70283ff9f656490d9c5ef5e5c882f70e
+                  expression: last(/Mailcow by Zabbix agent/mailrep.rbl[{#DOMAIN},{#RBL},{$DNS.RESOLVER}])=1
+                  name: 'Mailcow: {#DOMAIN} is listed on {#RBL}'
+                  priority: HIGH
+                  manual_close: 'YES'
+                  description: Sprawdz przyczyne (przejete konto? otwarty relay?), usun ja i zlec delisting na stronie listy.
+                  tags:
+                    - tag: scope
+                      value: reputation
+                - uuid: a9233f1dd82f468cafd86b0341c232a6
+                  expression: min(/Mailcow by Zabbix agent/mailrep.rbl[{#DOMAIN},{#RBL},{$DNS.RESOLVER}],2h)=2
+                  name: 'Mailcow: RBL check {#RBL} for {#DOMAIN} is failing'
+                  priority: WARNING
+                  manual_close: 'YES'
+                  description: Lista odrzuca zapytania (Spamhaus/URIBL przez publiczny DNS - uzyj klucza DQS) albo makro {$MAIL.IP}/{$MAIL.DOMAINS} nie jest ustawione.
+                  tags:
+                    - tag: scope
+                      value: reputation
+          graph_prototypes:
+            - uuid: d59417b712d44c68959e998c54ff3155
+              name: 'RBL status: {#DOMAIN} on {#RBL}'
+              ymin_type_1: FIXED
+              ymax_type_1: FIXED
+              yaxismax: '2'
+              graph_items:
+                - color: E53935
+                  item:
+                    host: Mailcow by Zabbix agent
+                    key: mailrep.rbl[{#DOMAIN},{#RBL},{$DNS.RESOLVER}]
+        - uuid: e572be267cba4918b3b128270ef10cac
+          name: Mail domains (DNS records)
+          key: mailrep.discovery[domains,"{$MAIL.DOMAINS}"]
+          delay: 1h
+          lifetime: 7d
+          description: 'Domeny z makra {$MAIL.DOMAINS}: kontrola SPF, DMARC, DKIM i MX.'
+          item_prototypes:
+            - uuid: 34c12627bc084c11af56e6bba3e4d7a4
+              name: 'DNS: SPF record of {#DOMAIN}'
+              key: mailrep.dns[TXT,{#DOMAIN},{$DNS.RESOLVER}]
+              delay: 1h
+              history: 90d
+              value_type: CHAR
+              description: Zawartosc rekordu TXT {#DOMAIN}. Pusty = brak rekordu, DNS_ERROR = blad zapytania.
+              tags:
+                - tag: component
+                  value: dns
+                - tag: domain
+                  value: '{#DOMAIN}'
+              trigger_prototypes:
+                - uuid: d39f099bb7e64b0398ae6d9619c2a1e8
+                  expression: find(/Mailcow by Zabbix agent/mailrep.dns[TXT,{#DOMAIN},{$DNS.RESOLVER}],,"like","v=spf1")=0 and find(/Mailcow by Zabbix agent/mailrep.dns[TXT,{#DOMAIN},{$DNS.RESOLVER}],,"like","DNS_ERROR")=0
+                  name: 'Mailcow: SPF record missing or wrong for {#DOMAIN}'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+                  description: Brak rekordu SPF - poczta bedzie oznaczana jako spam lub odrzucana.
+                  tags:
+                    - tag: scope
+                      value: reputation
+            - uuid: 691ec59255bc43f7954656327e0854b5
+              name: 'DNS: DMARC record of {#DOMAIN}'
+              key: mailrep.dns[TXT,_dmarc.{#DOMAIN},{$DNS.RESOLVER}]
+              delay: 1h
+              history: 90d
+              value_type: CHAR
+              description: Zawartosc rekordu TXT _dmarc.{#DOMAIN}. Pusty = brak rekordu, DNS_ERROR = blad zapytania.
+              tags:
+                - tag: component
+                  value: dns
+                - tag: domain
+                  value: '{#DOMAIN}'
+              trigger_prototypes:
+                - uuid: ffa7fd16ac9e4c6ca60c58c8e9336d5f
+                  expression: find(/Mailcow by Zabbix agent/mailrep.dns[TXT,_dmarc.{#DOMAIN},{$DNS.RESOLVER}],,"like","v=DMARC1")=0 and find(/Mailcow by Zabbix agent/mailrep.dns[TXT,_dmarc.{#DOMAIN},{$DNS.RESOLVER}],,"like","DNS_ERROR")=0
+                  name: 'Mailcow: DMARC record missing or wrong for {#DOMAIN}'
+                  priority: WARNING
+                  manual_close: 'YES'
+                  description: Brak DMARC - Gmail/Yahoo wymagaja go od nadawcow masowych, obniza zaufanie.
+                  tags:
+                    - tag: scope
+                      value: reputation
+            - uuid: 566de9a2f8e04610aa24fd3a39a2665a
+              name: 'DNS: DKIM record of {#DOMAIN}'
+              key: mailrep.dns[TXT,{$MAILCOW.DKIM.SELECTOR}._domainkey.{#DOMAIN},{$DNS.RESOLVER}]
+              delay: 1h
+              history: 90d
+              value_type: CHAR
+              description: Zawartosc rekordu TXT {$MAILCOW.DKIM.SELECTOR}._domainkey.{#DOMAIN}. Pusty = brak rekordu, DNS_ERROR = blad zapytania.
+              tags:
+                - tag: component
+                  value: dns
+                - tag: domain
+                  value: '{#DOMAIN}'
+              trigger_prototypes:
+                - uuid: 521d7f56b8fb46c292a91f1b2aa3bc2d
+                  expression: find(/Mailcow by Zabbix agent/mailrep.dns[TXT,{$MAILCOW.DKIM.SELECTOR}._domainkey.{#DOMAIN},{$DNS.RESOLVER}],,"like","p=")=0 and find(/Mailcow by Zabbix agent/mailrep.dns[TXT,{$MAILCOW.DKIM.SELECTOR}._domainkey.{#DOMAIN},{$DNS.RESOLVER}],,"like","DNS_ERROR")=0
+                  name: 'Mailcow: DKIM record missing or wrong for {#DOMAIN}'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+                  description: 'Brak klucza DKIM w DNS - podpis mailcow nie zostanie zweryfikowany. Klucz: panel mailcow > Configuration > ARC/DKIM keys.'
+                  tags:
+                    - tag: scope
+                      value: reputation
+            - uuid: c53b4afc709b4ccbb8602925da410877
+              name: 'DNS: MX record of {#DOMAIN}'
+              key: mailrep.dns[MX,{#DOMAIN},{$DNS.RESOLVER}]
+              delay: 1h
+              history: 90d
+              value_type: CHAR
+              description: Zawartosc rekordu MX {#DOMAIN}. Pusty = brak rekordu, DNS_ERROR = blad zapytania.
+              tags:
+                - tag: component
+                  value: dns
+                - tag: domain
+                  value: '{#DOMAIN}'
+              trigger_prototypes:
+                - uuid: 4ce111b1cbc94d268767db63c6baf87f
+                  expression: find(/Mailcow by Zabbix agent/mailrep.dns[MX,{#DOMAIN},{$DNS.RESOLVER}],,"like","{$MAIL.HOSTNAME}")=0 and find(/Mailcow by Zabbix agent/mailrep.dns[MX,{#DOMAIN},{$DNS.RESOLVER}],,"like","DNS_ERROR")=0
+                  name: 'Mailcow: MX record missing or wrong for {#DOMAIN}'
+                  priority: AVERAGE
+                  manual_close: 'YES'
+                  description: Rekord MX domeny nie wskazuje na ten serwer mailcow.
+                  tags:
+                    - tag: scope
+                      value: reputation
+      tags:
+        - tag: class
+          value: software
+        - tag: target
+          value: mailcow
+      macros:
+        - macro: '{$MAIL.IP}'
+          value: ''
+          description: Publiczny IPv4 serwera (wysylka). WYMAGANE.
+        - macro: '{$MAIL.HOSTNAME}'
+          value: ''
+          description: Nazwa hosta MAILCOW_HOSTNAME, np. mail.example.com (PTR, MX, TLS, porty). WYMAGANE.
+        - macro: '{$MAIL.DOMAINS}'
+          value: ''
+          description: 'Domeny obslugiwane przez serwer, po przecinku: example.com,example.de'
+        - macro: '{$DNS.RESOLVER}'
+          value: 1.1.1.1
+          description: Resolver dla zapytan DNS/RBL. Spamhaus/URIBL odrzucaja publiczne resolvery - patrz README.
+        - macro: '{$RBL.IP.ZONES}'
+          value: bl.spamcop.net,b.barracudacentral.org,psbl.surriel.com,bl.mailspike.net
+          description: Listy IP o krytycznym znaczeniu (trigger HIGH). Dodaj KLUCZ.zen.dq.spamhaus.net po rejestracji DQS.
+        - macro: '{$RBL.IP.ZONES.LOW}'
+          value: dnsbl-1.uceprotect.net
+          description: Listy IP informacyjne (trigger WARNING).
+        - macro: '{$RBL.DOMAIN.ZONES}'
+          value: ''
+          description: Listy domenowe, np. KLUCZ.dbl.dq.spamhaus.net. Puste = brak sprawdzen.
+        - macro: '{$RBL.CHECK.INTERVAL}'
+          value: 30m
+          description: Czestotliwosc sprawdzen RBL (nie przesadzaj - limity zapytan list).
+        - macro: '{$MAIL.QUEUE.MAX}'
+          value: '100'
+          description: Prog kolejki Postfixa.
+        - macro: '{$MAIL.DEFERRED.MAX}'
+          value: '50'
+          description: Prog wiadomosci odroczonych.
+        - macro: '{$MAIL.SENT.MAX}'
+          value: '500'
+          description: Max wiadomosci wychodzacych na 10 min (dostroic po tygodniu obserwacji).
+        - macro: '{$MAIL.BOUNCED.MAX}'
+          value: '20'
+          description: Max odbic na 10 min.
+        - macro: '{$MAILCOW.BACKUP.DIR}'
+          value: /opt/backup
+          description: Katalog MAILCOW_BACKUP_LOCATION z katalogami mailcow-*.
+        - macro: '{$MAILCOW.BACKUP.MAXAGE}'
+          value: '26'
+          description: Maksymalny wiek ostatniego backupu w godzinach.
+        - macro: '{$MAILCOW.DKIM.SELECTOR}'
+          value: dkim
+          description: 'Selektor DKIM (mailcow domyslnie: dkim).'
+        - macro: '{$CERT.EXPIRY.WARN}'
+          value: '14'
+          description: Ostrzezenie o wygasaniu certyfikatu (dni).
+        - macro: '{$SNDS.KEY}'
+          value: ''
+          description: Klucz Microsoft SNDS Automated Data Access (item SNDS domyslnie wylaczony).
+      valuemaps:
+        - uuid: ffd8889a2a554e048b4f5320b554c7b8
+          name: Mailcow RBL status
+          mappings:
+            - value: '0'
+              newvalue: Clean
+            - value: '1'
+              newvalue: LISTED
+            - value: '2'
+              newvalue: Check error
+        - uuid: 985f75eee6dd4264bbb881396925742e
+          name: Mailcow yes/no
+          mappings:
+            - value: '0'
+              newvalue: No / Down
+            - value: '1'
+              newvalue: Yes / Up
+  graphs:
+    - uuid: 087cd9b0d58c46c4aa0c66d3373d740d
+      name: 'Mailcow: Postfix queue'
+      graph_items:
+        - color: 1E88E5
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[queue_total]
+          drawtype: GRADIENT_LINE
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[queue_deferred]
+          sortorder: '1'
+    - uuid: 1014b773e52549288f495368d9d29910
+      name: 'Mailcow: Outbound mail flow (per 10 min)'
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[sent,10]
+          drawtype: GRADIENT_LINE
+        - color: FDD835
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[bounced,10]
+          sortorder: '1'
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[rejects_reputation,10]
+          sortorder: '2'
+    - uuid: 851129a7aca84958bab67017dab48ced
+      name: 'Mailcow: Containers'
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[containers_running]
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[containers_down]
+          yaxisside: RIGHT
+          sortorder: '1'
+    - uuid: 2c0856385b484e109efcdc8449af462f
+      name: 'Mailcow: Backup age'
+      graph_items:
+        - color: 8E24AA
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[backup_age,{$MAILCOW.BACKUP.DIR}]
+          drawtype: GRADIENT_LINE
+    - uuid: 7bf7a8ffe9474913951fe39228f76eb6
+      name: 'Mailcow: TLS certificates days left'
+      graph_items:
+        - color: 1E88E5
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailrep.certdays[{$MAIL.HOSTNAME},443]
+        - color: 00ACC1
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailrep.certdays[{$MAIL.HOSTNAME},993]
+          sortorder: '1'
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailrep.certdays[{$MAIL.HOSTNAME},25,smtp]
+          sortorder: '2'
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailrep.certdays[{$MAIL.HOSTNAME},587,smtp]
+          sortorder: '3'
