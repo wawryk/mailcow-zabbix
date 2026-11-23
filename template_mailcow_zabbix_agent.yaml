@@ -1,6 +1,6 @@
 zabbix_export:
   version: '6.0'
-  date: '2026-11-06T12:00:00Z'
+  date: '2026-11-21T12:00:00Z'
   groups:
     - uuid: 640dc27249724cf686fcb6b103049472
       name: Templates/Applications
@@ -8,7 +8,7 @@ zabbix_export:
     - uuid: 80af825f96824dff8733e3c42e391b9f
       template: Mailcow by Zabbix agent
       name: Mailcow by Zabbix agent
-      description: 'Monitoring serwerow pocztowych mailcow-dockerized: kolejka i ruch Postfixa, kontenery, backup, reputacja (RBL, PTR/FCrDNS, Microsoft SNDS, odrzucenia reputacyjne), rekordy SPF/DKIM/DMARC/MX, certyfikaty TLS i dostepnosc portow.
+      description: 'Monitoring serwerow pocztowych mailcow-dockerized: kolejka i ruch Postfixa (statusy dostarczen), rspamd (akcje, oceny spamu, Bayes), kontenery, backup, reputacja (RBL, PTR/FCrDNS, Microsoft SNDS, odrzucenia reputacyjne), rekordy SPF/DKIM/DMARC/MX, certyfikaty TLS i dostepnosc portow.
 
         Wymaga skryptow mailrep.sh i mailcow_mail.sh, pliku UserParameter i wpisu sudoers - patrz README.md.
 
@@ -16,6 +16,26 @@ zabbix_export:
       groups:
         - name: Templates/Applications
       items:
+        - uuid: 21ce72ac18c2443ab4a5639c30f287a2
+          name: 'Postfix: log stats (10 min, JSON)'
+          key: mailcow.mail[postfix_stats,10]
+          delay: 10m
+          history: '0'
+          value_type: TEXT
+          description: Statusy dostarczen i odrzucenia z logu postfix-mailcow w ostatnich 10 min. Zrodlo dla itemow zaleznych.
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 66a892d1dc704e389fe1cbb23961c9db
+          name: 'Rspamd: stats (JSON)'
+          key: mailcow.mail[rspamd_stats,10]
+          delay: 10m
+          history: '0'
+          value_type: TEXT
+          description: Liczniki rspamd (/stat) i oceny wiadomosci z historii (/history) z ostatnich 10 min, czytane przez socket kontrolera w php-fpm-mailcow. Zrodlo dla itemow zaleznych.
+          tags:
+            - tag: component
+              value: spam
         - uuid: 4abfd376992c40b2b31f578d46cd6e4f
           name: 'Postfix: queue size'
           key: mailcow.mail[queue_total]
@@ -69,12 +89,19 @@ zabbix_export:
                   value: performance
         - uuid: 661d468ab56549b2924b7bc48f46ac65
           name: 'Postfix: outbound sent (10 min)'
+          type: DEPENDENT
           key: mailcow.mail[sent,10]
-          delay: 10m
+          delay: '0'
           history: 31d
           value_type: FLOAT
           units: msg
           description: Wiadomosci wyslane na zewnatrz w ostatnich 10 min (bez lokalnych dostarczen do dovecot).
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.sent
           tags:
             - tag: component
               value: mailflow
@@ -90,12 +117,19 @@ zabbix_export:
                   value: security
         - uuid: 1f57237a7ac24acd8477ebeb25eab953
           name: 'Postfix: bounced (10 min)'
+          type: DEPENDENT
           key: mailcow.mail[bounced,10]
-          delay: 10m
+          delay: '0'
           history: 31d
           value_type: FLOAT
           units: msg
           description: Wiadomosci trwale odrzucone (status=bounced) w ostatnich 10 min.
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.bounced
           tags:
             - tag: component
               value: mailflow
@@ -111,12 +145,19 @@ zabbix_export:
                   value: performance
         - uuid: 4ee501b8b5dc4837889f2c207d9f68b9
           name: 'Postfix: reputation rejects (10 min)'
+          type: DEPENDENT
           key: mailcow.mail[rejects_reputation,10]
-          delay: 10m
+          delay: '0'
           history: 31d
           value_type: FLOAT
           units: msg
           description: Odrzucenia przez serwery docelowe z powodow reputacji/list blokujacych (Microsoft S3140/S3150, Gmail 5.7.26/4.7.0, Spamhaus, blocklist...).
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.rejects_reputation
           tags:
             - tag: component
               value: reputation
@@ -130,6 +171,752 @@ zabbix_export:
               tags:
                 - tag: scope
                   value: reputation
+        - uuid: c767726d1c1b48929bc44d477ab9d68a
+          name: 'Postfix: log stats available'
+          type: DEPENDENT
+          key: mailcow.postfix[ok]
+          delay: '0'
+          history: 31d
+          value_type: UNSIGNED
+          description: 1 = log postfix-mailcow odczytany, 0 = brak kontenera/dockera.
+          valuemap:
+            name: Mailcow yes/no
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.ok
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: mailflow
+          triggers:
+            - uuid: d98956eff4df49869793270c2619c255
+              expression: last(/Mailcow by Zabbix agent/mailcow.postfix[ok])=0 or nodata(/Mailcow by Zabbix agent/mailcow.postfix[ok],30m)=1
+              name: 'Mailcow: cannot read Postfix log stats'
+              priority: WARNING
+              description: 'mailcow_mail.sh postfix_stats nie zwraca danych: stara wersja skryptu na serwerze (brak trybu postfix_stats), brak sudoers albo kontenera postfix-mailcow. Itemy sent/bounced/reputation oraz dashboard nie dostaja wtedy danych.'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 0d12b98373204145804aa24e589ec9e1
+          name: 'Postfix: delivered to mailboxes (10 min)'
+          type: DEPENDENT
+          key: mailcow.postfix[delivered_local]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Dostarczenia lokalne do dovecot (poczta przychodzaca i wewnetrzna). Liczone linie logu, czyli odbiorcy, nie wiadomosci.
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.delivered_local
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 7f5e673580af499b84039efc3b6db3bf
+          name: 'Postfix: deferred (10 min)'
+          type: DEPENDENT
+          key: mailcow.postfix[deferred]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Proby dostarczenia odroczone (status=deferred) - serwer docelowy odrzucil tymczasowo. Liczone linie logu, czyli odbiorcy, nie wiadomosci.
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.deferred
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 34987115d6384ecea8e63cf2ab5a4c77
+          name: 'Postfix: expired (10 min)'
+          type: DEPENDENT
+          key: mailcow.postfix[expired]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci usuniete z kolejki po przekroczeniu czasu ponawiania (status=expired). Liczone linie logu, czyli odbiorcy, nie wiadomosci.
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.expired
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 745a150d4efb4c1aba3e46e742e7db02
+          name: 'Postfix: inbound rejected (smtpd/postscreen) (10 min)'
+          type: DEPENDENT
+          key: mailcow.postfix[rejected]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: 'Polaczenia przychodzace odrzucone przez Postfixa (NOQUEUE: reject) - RBL, bledni odbiorcy, polityki. Liczone linie logu, czyli odbiorcy, nie wiadomosci.'
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.rejected
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 52e2a0681bbf4f08a930f523f1590c8d
+          name: 'Postfix: inbound rejected by rspamd (10 min)'
+          type: DEPENDENT
+          key: mailcow.postfix[milter_rejected]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci odrzucone przez rspamd w trakcie sesji SMTP (milter-reject). Liczone linie logu, czyli odbiorcy, nie wiadomosci.
+          master_item:
+            key: mailcow.mail[postfix_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.milter_rejected
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 7ffaeef297334619b113e3f876af28a0
+          name: 'Rspamd: stats available'
+          type: DEPENDENT
+          key: mailcow.rspamd[ok]
+          delay: '0'
+          history: 31d
+          value_type: UNSIGNED
+          description: 1 = kontroler rspamd odpowiada przez socket w php-fpm-mailcow.
+          valuemap:
+            name: Mailcow yes/no
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.ok
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: spam
+          triggers:
+            - uuid: 68ab245e9ce7402a9500bb8d79d94c4f
+              expression: last(/Mailcow by Zabbix agent/mailcow.rspamd[ok])=0 or nodata(/Mailcow by Zabbix agent/mailcow.rspamd[ok],30m)=1
+              name: 'Mailcow: cannot read rspamd stats'
+              priority: WARNING
+              description: 'mailcow_mail.sh rspamd_stats nie zwraca danych: stara wersja skryptu, brak kontenera php-fpm-mailcow albo socketu /var/lib/rspamd/rspamd.sock. Sprawdz: sudo /usr/local/bin/mailcow_mail.sh rspamd_stats'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: f9020a8234944738a41fb43a473f5c73
+          name: 'Rspamd: scanned (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[scanned]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci sprawdzone przez rspamd w interwale (przychodzace i wychodzace).
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.scanned
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 1a96ebaba26d41acb4b45a48fc7a7c9d
+          name: 'Rspamd: action no action (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[action,no_action]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z akcja rspamd 'no action' w interwale.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.actions.no_action
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 517243873a464c419bb156054c7e0a5c
+          name: 'Rspamd: action greylist (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[action,greylist]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z akcja rspamd 'greylist' w interwale.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.actions.greylist
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: cd49b7d1fede4a7bbdcfdad338246dab
+          name: 'Rspamd: action add header (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[action,add_header]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z akcja rspamd 'add header' w interwale.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.actions.add_header
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 01c9d8140488495fbfce397d7cde244a
+          name: 'Rspamd: action rewrite subject (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[action,rewrite_subject]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z akcja rspamd 'rewrite subject' w interwale.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.actions.rewrite_subject
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 8189fc589b204eb0b0cc5bf4c1bb2e37
+          name: 'Rspamd: action soft reject (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[action,soft_reject]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z akcja rspamd 'soft reject' w interwale.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.actions.soft_reject
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: d0c6ed969d8544e68d8b5006cdcee4a2
+          name: 'Rspamd: action reject (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[action,reject]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z akcja rspamd 'reject' w interwale.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.actions.reject
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: afec8a0f0f404024ab8139cebe546ede
+          name: 'Rspamd: Bayes learned as spam (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[learned,spam]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci nauczone jako spam (uzytkownik przeniosl do Junk lub autolearn). Duzo nauki recznej = spam przechodzi przez filtr (false negative).
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.bayes.spam
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: d167e46b9db34e36b65f625fb538d46d
+          name: 'Rspamd: Bayes learned as ham (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[learned,ham]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci nauczone jako ham (uzytkownik wyjal z Junk lub autolearn). Wzrost = dobra poczta trafia do spamu (false positive).
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.bayes.ham
+              error_handler: DISCARD_VALUE
+            - type: SIMPLE_CHANGE
+              parameters:
+                - ''
+          tags:
+            - tag: component
+              value: spam
+        - uuid: f9da8ca1fed748179e2c1dd4b89c0ea3
+          name: 'Rspamd: scored messages (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,n]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Liczba wiadomosci z historii rspamd w oknie 10 min (baza dla statystyk ocen). Historia mailcow trzyma ok. 1000 ostatnich wiadomosci - przy wiekszym ruchu okno jest niepelne.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.n
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: spam
+        - uuid: df891f63d0044d07bae3332166841aa8
+          name: 'Rspamd: average score (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,avg]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          description: Srednia ocena rspamd wszystkich wiadomosci w oknie.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.avg
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: e4c811a87d8f40fda8d886d98346a434
+          name: 'Rspamd: average score of clean mail (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,avg_ham]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          description: Srednia ocena wiadomosci z akcja 'no action'. Im nizej, tym pewniej.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.avg_ham
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 642c56a86f2f4f0fbfa6c4cb3f550a01
+          name: 'Rspamd: average score of spam (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,avg_spam]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          description: Srednia ocena wiadomosci oznaczonych jako spam (add header, rewrite subject, reject).
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.avg_spam
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 64e1b6732b304857ace290a2d35b618e
+          name: 'Rspamd: median score (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,p50]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          description: Mediana ocen w oknie.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.p50
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: e50a672b50644f949ae1e6745dab8b9b
+          name: 'Rspamd: 95th percentile score (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,p95]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          description: 95. percentyl ocen w oknie.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.p95
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: b71e2f280b4f41439674a60686af6885
+          name: 'Rspamd: max score (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,max]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          description: Najwyzsza ocena w oknie.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.max
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: a6aae24f4c87400d9d500664fe73a42a
+          name: 'Rspamd: spam share (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,spam_pct]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: '%'
+          description: Udzial wiadomosci oznaczonych jako spam w oknie.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.spam_pct
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: e29f6d50f1e042ee848732ffa2c43d25
+          name: 'Rspamd: borderline share (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score,borderline_pct]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: '%'
+          description: Udzial wiadomosci z ocena w odleglosci < 2 pkt od progu 'add header'. Duzy udzial = filtr niepewny, rosnie ryzyko false positive/negative.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.borderline_pct
+              error_handler: DISCARD_VALUE
+          tags:
+            - tag: component
+              value: spam
+        - uuid: cc68223816934a6cacb64ecf565f1988
+          name: 'Rspamd: score < 0 (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score_bucket,neg]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z ocena rspamd w przedziale < 0 w oknie 10 min.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.buckets['neg']
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 5d0dd498eee8430cbd2ec0d83df656d6
+          name: 'Rspamd: score 0-5 (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score_bucket,0_5]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z ocena rspamd w przedziale 0-5 w oknie 10 min.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.buckets['0_5']
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: spam
+        - uuid: db96c8682916465aa5745a3616fafa3c
+          name: 'Rspamd: score 5-10 (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score_bucket,5_10]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z ocena rspamd w przedziale 5-10 w oknie 10 min.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.buckets['5_10']
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: spam
+        - uuid: af1692340bd54789968ed8edbb02882b
+          name: 'Rspamd: score 10-15 (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score_bucket,10_15]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z ocena rspamd w przedziale 10-15 w oknie 10 min.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.buckets['10_15']
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: spam
+        - uuid: b5fcd7cc443b495b878c6b58302c157e
+          name: 'Rspamd: score >= 15 (10 min)'
+          type: DEPENDENT
+          key: mailcow.rspamd[score_bucket,15]
+          delay: '0'
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci z ocena rspamd w przedziale >= 15 w oknie 10 min.
+          master_item:
+            key: mailcow.mail[rspamd_stats,10]
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.window.buckets['15']
+              error_handler: CUSTOM_VALUE
+              error_handler_params: '0'
+          tags:
+            - tag: component
+              value: spam
+        - uuid: b3c5ee816dea4b899e9d845d883e9b40
+          name: '24h: outbound sent'
+          type: CALCULATED
+          key: mailcow.total24h[sent]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Suma z ostatnich 24 h (outbound sent).
+          params: sum(//mailcow.mail[sent,10],24h)
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 223073739524454bb2c2185129efd672
+          name: '24h: delivered to mailboxes'
+          type: CALCULATED
+          key: mailcow.total24h[delivered_local]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Suma z ostatnich 24 h (delivered to mailboxes).
+          params: sum(//mailcow.postfix[delivered_local],24h)
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: b4a3ba3bcd664a1f9d540dbea04e7c5a
+          name: '24h: deferred'
+          type: CALCULATED
+          key: mailcow.total24h[deferred]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Suma z ostatnich 24 h (deferred).
+          params: sum(//mailcow.postfix[deferred],24h)
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 4d2b0461ce62475aab853177db1dfdbe
+          name: '24h: bounced'
+          type: CALCULATED
+          key: mailcow.total24h[bounced]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Suma z ostatnich 24 h (bounced).
+          params: sum(//mailcow.mail[bounced,10],24h)
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: b5ca69f73adb4731b0a84de28ce85e25
+          name: '24h: expired'
+          type: CALCULATED
+          key: mailcow.total24h[expired]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Suma z ostatnich 24 h (expired).
+          params: sum(//mailcow.postfix[expired],24h)
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: f8098076a15a42f2870f57ef4270f979
+          name: '24h: inbound rejected (smtpd/postscreen)'
+          type: CALCULATED
+          key: mailcow.total24h[rejected]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Suma z ostatnich 24 h (inbound rejected (smtpd/postscreen)).
+          params: sum(//mailcow.postfix[rejected],24h)
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: 159f03d88b4a4d73bc3234d634fa60ed
+          name: '24h: inbound rejected by rspamd'
+          type: CALCULATED
+          key: mailcow.total24h[milter_rejected]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Suma z ostatnich 24 h (inbound rejected by rspamd).
+          params: sum(//mailcow.postfix[milter_rejected],24h)
+          tags:
+            - tag: component
+              value: mailflow
+        - uuid: e16cb0a8b9604550a11b3f0f5de4932c
+          name: '24h: rspamd scanned'
+          type: CALCULATED
+          key: mailcow.total24h[scanned]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci sprawdzone przez rspamd w ostatnich 24 h.
+          params: sum(//mailcow.rspamd[scanned],24h)
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 98051d1f45c148b1815cc01de0adbe71
+          name: '24h: rspamd spam (add header + rewrite subject + reject)'
+          type: CALCULATED
+          key: mailcow.total24h[spam]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci oznaczone przez rspamd jako spam w ostatnich 24 h.
+          params: sum(//mailcow.rspamd[action,add_header],24h)+sum(//mailcow.rspamd[action,rewrite_subject],24h)+sum(//mailcow.rspamd[action,reject],24h)
+          tags:
+            - tag: component
+              value: spam
+        - uuid: 14a2b95da5ec45af9d35445cf0f72005
+          name: '24h: rspamd rejected'
+          type: CALCULATED
+          key: mailcow.total24h[spam_rejected]
+          delay: 10m
+          history: 31d
+          value_type: FLOAT
+          units: msg
+          description: Wiadomosci odrzucone przez rspamd w ostatnich 24 h.
+          params: sum(//mailcow.rspamd[action,reject],24h)
+          tags:
+            - tag: component
+              value: spam
         - uuid: efe639f247d5437d8b80d425f876d19c
           name: 'Mailcow: containers running'
           key: mailcow.mail[containers_running]
@@ -779,6 +1566,561 @@ zabbix_export:
         - macro: '{$SNDS.KEY}'
           value: ''
           description: Klucz Microsoft SNDS Automated Data Access (item SNDS domyslnie wylaczony).
+      dashboards:
+        - uuid: 49b9a86daab841c8ae2b9b09508ca3b6
+          name: Mailcow
+          pages:
+            - name: Overview
+              widgets:
+                - type: PLAIN_TEXT
+                  name: Server state
+                  x: '0'
+                  y: '0'
+                  width: '8'
+                  height: '10'
+                  fields:
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.mail[containers_down]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.mail[containers_running]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.mail[queue_total]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.mail[queue_deferred]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.mail[backup_age,{$MAILCOW.BACKUP.DIR}]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.postfix[ok]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[ok]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: net.tcp.service[smtp,{$MAIL.HOSTNAME},25]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: net.tcp.service[tcp,{$MAIL.HOSTNAME},465]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: net.tcp.service[tcp,{$MAIL.HOSTNAME},587]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: net.tcp.service[tcp,{$MAIL.HOSTNAME},993]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: net.tcp.service[https,{$MAIL.HOSTNAME},443]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailrep.certdays[{$MAIL.HOSTNAME},443]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailrep.certdays[{$MAIL.HOSTNAME},993]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailrep.certdays[{$MAIL.HOSTNAME},25,smtp]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailrep.certdays[{$MAIL.HOSTNAME},587,smtp]
+                    - type: INTEGER
+                      name: show_lines
+                      value: '1'
+                - type: PLAIN_TEXT
+                  name: Last 24h
+                  x: '8'
+                  y: '0'
+                  width: '8'
+                  height: '5'
+                  fields:
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[sent]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[delivered_local]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[deferred]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[bounced]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[expired]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[rejected]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[milter_rejected]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[scanned]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[spam]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.total24h[spam_rejected]
+                    - type: INTEGER
+                      name: show_lines
+                      value: '1'
+                - type: PLAIN_TEXT
+                  name: Spam scoring (last 10 min)
+                  x: '8'
+                  y: '5'
+                  width: '8'
+                  height: '5'
+                  fields:
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[score,n]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[score,spam_pct]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[score,avg_ham]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[score,avg_spam]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[score,borderline_pct]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[learned,ham]
+                    - type: ITEM
+                      name: itemids
+                      value:
+                        host: Mailcow by Zabbix agent
+                        key: mailcow.rspamd[learned,spam]
+                    - type: INTEGER
+                      name: show_lines
+                      value: '1'
+                - type: GRAPH_CLASSIC
+                  name: Delivery status share
+                  x: '16'
+                  y: '0'
+                  width: '8'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Mail delivery status share'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Rspamd actions share
+                  x: '16'
+                  y: '5'
+                  width: '8'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Rspamd actions share'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Delivery status
+                  x: '0'
+                  y: '10'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Mail delivery status (per 10 min)'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Rspamd actions
+                  x: '12'
+                  y: '10'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Rspamd actions (per 10 min)'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Postfix queue
+                  x: '0'
+                  y: '15'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Postfix queue'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Containers
+                  x: '12'
+                  y: '15'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Containers'
+                        host: Mailcow by Zabbix agent
+            - name: Mail flow
+              widgets:
+                - type: GRAPH_CLASSIC
+                  name: Delivery status
+                  x: '0'
+                  y: '0'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Mail delivery status (per 10 min)'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Delivery status share
+                  x: '12'
+                  y: '0'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Mail delivery status share'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Outbound, bounces, reputation rejects
+                  x: '0'
+                  y: '6'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Outbound mail flow (per 10 min)'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Inbound rejected
+                  x: '12'
+                  y: '6'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Inbound rejected (per 10 min)'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Postfix queue
+                  x: '0'
+                  y: '12'
+                  width: '24'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Postfix queue'
+                        host: Mailcow by Zabbix agent
+            - name: Spam
+              widgets:
+                - type: GRAPH_CLASSIC
+                  name: Rspamd actions
+                  x: '0'
+                  y: '0'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Rspamd actions (per 10 min)'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Rspamd actions share
+                  x: '12'
+                  y: '0'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Rspamd actions share'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: 'Score quality: clean vs spam'
+                  x: '0'
+                  y: '6'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Spam score quality'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Score distribution
+                  x: '12'
+                  y: '6'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Spam score distribution (per 10 min)'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Spam share and borderline scores
+                  x: '0'
+                  y: '12'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Spam share and borderline scores'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Bayes learning (user corrections)
+                  x: '12'
+                  y: '12'
+                  width: '12'
+                  height: '6'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Bayes learning (per 10 min)'
+                        host: Mailcow by Zabbix agent
+            - name: Reputation & TLS
+              widgets:
+                - type: GRAPH_PROTOTYPE
+                  name: RBL (IP) - critical
+                  x: '0'
+                  y: '0'
+                  width: '24'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '2'
+                    - type: GRAPH_PROTOTYPE
+                      name: graphid
+                      value:
+                        name: 'RBL status: {$MAIL.IP} on {#RBL}'
+                        host: Mailcow by Zabbix agent
+                    - type: INTEGER
+                      name: columns
+                      value: '4'
+                    - type: INTEGER
+                      name: rows
+                      value: '1'
+                - type: GRAPH_PROTOTYPE
+                  name: RBL (IP) - informational
+                  x: '0'
+                  y: '5'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '2'
+                    - type: GRAPH_PROTOTYPE
+                      name: graphid
+                      value:
+                        name: 'RBL status: {$MAIL.IP} on {#RBL} (informational)'
+                        host: Mailcow by Zabbix agent
+                    - type: INTEGER
+                      name: columns
+                      value: '2'
+                    - type: INTEGER
+                      name: rows
+                      value: '1'
+                - type: GRAPH_PROTOTYPE
+                  name: RBL (domains)
+                  x: '12'
+                  y: '5'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '2'
+                    - type: GRAPH_PROTOTYPE
+                      name: graphid
+                      value:
+                        name: 'RBL status: {#DOMAIN} on {#RBL}'
+                        host: Mailcow by Zabbix agent
+                    - type: INTEGER
+                      name: columns
+                      value: '2'
+                    - type: INTEGER
+                      name: rows
+                      value: '1'
+                - type: GRAPH_CLASSIC
+                  name: TLS certificates
+                  x: '0'
+                  y: '10'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: TLS certificates days left'
+                        host: Mailcow by Zabbix agent
+                - type: GRAPH_CLASSIC
+                  name: Backup age
+                  x: '12'
+                  y: '10'
+                  width: '12'
+                  height: '5'
+                  fields:
+                    - type: INTEGER
+                      name: source_type
+                      value: '0'
+                    - type: GRAPH
+                      name: graphid
+                      value:
+                        name: 'Mailcow: Backup age'
+                        host: Mailcow by Zabbix agent
       valuemaps:
         - uuid: ffd8889a2a554e048b4f5320b554c7b8
           name: Mailcow RBL status
@@ -871,3 +2213,225 @@ zabbix_export:
             host: Mailcow by Zabbix agent
             key: mailrep.certdays[{$MAIL.HOSTNAME},587,smtp]
           sortorder: '3'
+    - uuid: b510644dba27451c93ef8aa6628bbb71
+      name: 'Mailcow: Mail delivery status (per 10 min)'
+      type: STACKED
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[sent,10]
+        - color: 1E88E5
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[delivered_local]
+          sortorder: '1'
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[deferred]
+          sortorder: '2'
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[bounced,10]
+          sortorder: '3'
+        - color: 8E24AA
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[expired]
+          sortorder: '4'
+    - uuid: 31c6620d51b34c4e9da74378821a9ffc
+      name: 'Mailcow: Mail delivery status share'
+      type: PIE
+      height: '300'
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[sent,10]
+        - color: 1E88E5
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[delivered_local]
+          sortorder: '1'
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[deferred]
+          sortorder: '2'
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[bounced,10]
+          sortorder: '3'
+        - color: 8E24AA
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[expired]
+          sortorder: '4'
+    - uuid: 74f66ab5fe66423a9e3da242cf0f6a83
+      name: 'Mailcow: Inbound rejected (per 10 min)'
+      graph_items:
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[rejected]
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.postfix[milter_rejected]
+          sortorder: '1'
+        - color: 8E24AA
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.mail[rejects_reputation,10]
+          sortorder: '2'
+    - uuid: 1b013b7b22614e6caab5c406a2fad9c5
+      name: 'Mailcow: Rspamd actions (per 10 min)'
+      type: STACKED
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,no_action]
+        - color: 9CCC65
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,greylist]
+          sortorder: '1'
+        - color: FDD835
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,add_header]
+          sortorder: '2'
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,rewrite_subject]
+          sortorder: '3'
+        - color: 8E24AA
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,soft_reject]
+          sortorder: '4'
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,reject]
+          sortorder: '5'
+    - uuid: bcb7fc59e7c647fdb9842f482e614e76
+      name: 'Mailcow: Rspamd actions share'
+      type: PIE
+      height: '300'
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,no_action]
+        - color: 9CCC65
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,greylist]
+          sortorder: '1'
+        - color: FDD835
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,add_header]
+          sortorder: '2'
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,rewrite_subject]
+          sortorder: '3'
+        - color: 8E24AA
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,soft_reject]
+          sortorder: '4'
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[action,reject]
+          sortorder: '5'
+    - uuid: e442d03b561d47158ec5640b8b1876e3
+      name: 'Mailcow: Spam score quality'
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score,avg_ham]
+          drawtype: BOLD_LINE
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score,avg_spam]
+          drawtype: BOLD_LINE
+          sortorder: '1'
+        - color: 1E88E5
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score,p50]
+          sortorder: '2'
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score,p95]
+          drawtype: DASHED_LINE
+          sortorder: '3'
+    - uuid: d1d5883161f0428c9492b567b7e40b47
+      name: 'Mailcow: Spam score distribution (per 10 min)'
+      type: STACKED
+      graph_items:
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score_bucket,neg]
+        - color: 9CCC65
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score_bucket,0_5]
+          sortorder: '1'
+        - color: FDD835
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score_bucket,5_10]
+          sortorder: '2'
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score_bucket,10_15]
+          sortorder: '3'
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score_bucket,15]
+          sortorder: '4'
+    - uuid: 9d5a4a7eb8c04b04b5630d8ce742453e
+      name: 'Mailcow: Spam share and borderline scores'
+      ymin_type_1: FIXED
+      ymax_type_1: FIXED
+      yaxismax: '100'
+      graph_items:
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score,spam_pct]
+          drawtype: GRADIENT_LINE
+        - color: FB8C00
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[score,borderline_pct]
+          sortorder: '1'
+    - uuid: bf744792c1644ddc98ea2d2a5e1c62be
+      name: 'Mailcow: Bayes learning (per 10 min)'
+      graph_items:
+        - color: E53935
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[learned,spam]
+        - color: 43A047
+          item:
+            host: Mailcow by Zabbix agent
+            key: mailcow.rspamd[learned,ham]
+          sortorder: '1'

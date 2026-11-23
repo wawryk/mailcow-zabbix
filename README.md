@@ -34,8 +34,26 @@ Format eksportu to 6.0. Szablon importuje się do Zabbix 6.0, 6.4 i 7.x; nowsze 
 ### Ruch pocztowy
 
 - Wielkość kolejki Postfixa oraz liczba wiadomości odroczonych (deferred).
-- Wiadomości wysłane na zewnątrz w ciągu 10 minut. Gwałtowny wzrost zwykle oznacza **przejęte konto**.
-- Liczba odbić (bounced) w ciągu 10 minut.
+- Statusy dostarczeń z logu Postfixa w oknach 10-minutowych, z jednego odczytu logu (`postfix_stats`):
+  - wysłane na zewnątrz (`sent`); gwałtowny wzrost zwykle oznacza **przejęte konto**,
+  - dostarczone do skrzynek (dovecot), odroczone, odbite (bounced), wygasłe (expired),
+  - odrzucone przychodzące: przez Postfixa/postscreen (`NOQUEUE: reject`) i przez rspamd (`milter-reject`).
+- Sumy z ostatnich 24 h (itemy wyliczane `24h: ...`).
+
+Liczone są linie logu, czyli odbiorcy: wiadomość do 5 adresatów to 5 dostarczeń.
+
+### Spam (rspamd)
+
+- Akcje rspamd na 10 minut: no action, greylist, add header, rewrite subject, soft reject, reject.
+- Nauka Bayes (spam/ham). Mailcow uczy, gdy użytkownik przenosi wiadomość do Junk lub z Junk, więc wzrost nauki „ham” oznacza dobrą pocztę wpadającą do spamu (false positive), a „spam” — spam przechodzący przez filtr.
+- Jakość ocen z historii rspamd (ostatnie 10 min):
+  - średnia ocena poczty czystej i spamu (im większy odstęp, tym pewniejszy filtr),
+  - mediana, 95. percentyl i maksimum,
+  - udział spamu,
+  - udział ocen „na granicy” (mniej niż 2 pkt od progu *add header*); duży udział oznacza niepewny filtr,
+  - rozkład ocen w przedziałach < 0, 0–5, 5–10, 10–15, ≥ 15.
+
+Dane rspamd skrypt czyta przez socket kontrolera `/var/lib/rspamd/rspamd.sock` w kontenerze `php-fpm-mailcow`, tak samo jak panel mailcow. Nie trzeba hasła ani dodatkowych pakietów na hoście. Historia rspamd w mailcow trzyma ok. 1000 ostatnich wiadomości, więc przy większym ruchu statystyki ocen obejmują tylko część okna; liczniki akcji są zawsze pełne.
 
 ### Infrastruktura mailcow
 
@@ -53,6 +71,17 @@ Format eksportu to 6.0. Szablon importuje się do Zabbix 6.0, 6.4 i 7.x; nowsze 
 
 - Dni do wygaśnięcia certyfikatu na portach 443, 25 (STARTTLS), 587 (STARTTLS) i 993.
 - Dostępność portów 25, 465, 587, 993 i 443. To simple checks wykonywane z serwera lub proxy Zabbix, czyli z perspektywy zewnętrznej.
+
+### Dashboard „Mailcow”
+
+Dashboard szablonu (na hoście: *Dashboards* w widoku hosta) ma cztery strony:
+
+- **Overview:** stan serwera (kontenery, kolejka, backup, porty, certyfikaty, dostępność danych), sumy z 24 h, oceny spamu z ostatnich 10 min, udziały statusów i akcji rspamd, kolejka i kontenery.
+- **Mail flow:** statusy dostarczeń (stos i udział), ruch wychodzący, odbicia, odrzucenia reputacyjne i przychodzące.
+- **Spam:** akcje rspamd, jakość ocen (czysta poczta vs spam), rozkład ocen, udział spamu i ocen granicznych, nauka Bayes.
+- **Reputation & TLS:** status list RBL, certyfikaty, wiek backupu.
+
+Wykresy kołowe pokazują proporcje za wybrany okres (średnia z itemów o tym samym interwale).
 
 ### Wykresy
 
@@ -98,8 +127,19 @@ zabbix_get -s MAILCOW_IP -k 'mailrep.discovery[zones,"bl.spamcop.net,psbl.surrie
 zabbix_get -s MAILCOW_IP -k 'mailcow.mail[queue_total]'                           # liczba >= 0  (-1 = problem z sudo/dockerem)
 zabbix_get -s MAILCOW_IP -k 'mailcow.mail[containers_down]'                       # 0
 zabbix_get -s MAILCOW_IP -k 'mailcow.mail[backup_age,/opt/backup]'                # godziny
+zabbix_get -s MAILCOW_IP -k 'mailcow.mail[postfix_stats,10]'                      # {"ok":1,"sent":...}
+zabbix_get -s MAILCOW_IP -k 'mailcow.mail[rspamd_stats,10]'                       # {"ok":1,"scanned":...}
 zabbix_get -s MAILCOW_IP -k 'mailrep.certdays[mail.example.com,25,smtp]'          # dni
 ```
+
+## Aktualizacja istniejącego szablonu
+
+1. **Najpierw** podmień skrypty na każdym serwerze mailcow (`install -m 755 scripts/*.sh /usr/local/bin/`). Itemy *outbound sent*, *bounced* i *reputation rejects* są teraz liczone z trybu `postfix_stats`; stary skrypt go nie zna. Plik UserParameter i sudoers się nie zmieniły.
+2. Zaimportuj `template_mailcow_zabbix_agent.yaml` z zaznaczonym *Update existing* i *Create new* (w tym dla *Template dashboards*). *Delete missing* nie jest potrzebne: nic nie zostało usunięte.
+3. Klucze i UUID dotychczasowych itemów, triggerów i wykresów są bez zmian, więc historia zostaje. Itemy sent/bounced/reputation zmieniają tylko typ na zależny.
+4. Jeśli serwer ma stary skrypt, po ok. 30 min pojawi się trigger *cannot read Postfix log stats* / *cannot read rspamd stats*.
+
+Aktualizację przetestowano na Zabbix 6.0.49 i 7.0.32: import starej wersji, potem nowej, potem nowej ponownie. Identyfikatory itemów się nie zmieniły.
 
 ## Import i podpięcie do hosta
 
@@ -162,6 +202,7 @@ Uzupełniająco, poza Zabbixem: **Google Postmaster Tools** (wymaga weryfikacji 
 
 ## Rozwiązywanie problemów
 
+- **„cannot read rspamd stats”**: sprawdź `sudo /usr/local/bin/mailcow_mail.sh rspamd_stats` i czy `docker compose exec php-fpm-mailcow ls -l /var/lib/rspamd/rspamd.sock` pokazuje socket.
 - **„cannot read mail metrics”** albo wartości `-1` z `mailcow.mail[...]`:
   - sprawdź `sudo -u zabbix sudo -n /usr/local/bin/mailcow_mail.sh queue_total`,
   - brak sudoers albo `requiretty` daje błąd,
@@ -192,5 +233,6 @@ Identyfikatory UUID w szablonie są deterministyczne. Ponowny import aktualizuje
   - certyfikaty na portach 443, 587 (STARTTLS) i 993,
   - zachowanie bez dostępu do Dockera.
 - Szablon przeszedł walidację statyczną: składnia YAML, UUIDv4, unikalność kluczy, referencje w triggerach i wykresach, użycie makr.
-- **Nie był importowany do działającego serwera Zabbix.** Przy pierwszym imporcie sprawdź komunikaty.
+- Import i aktualizacja przetestowane na Zabbix 6.0.49 i 7.0.32 (w 7.0 widgety *Plain text* są konwertowane na *Item history*). Itemy nie były zasilane danymi z żywego agenta.
+- Tryb `rspamd_stats` przetestowano na rspamd 4.3 (socket kontrolera, `/stat`, `/history`) z PHP 8.2; ścieżki socketu i kontenera `php-fpm-mailcow` pochodzą z konfiguracji mailcow, nie z żywej instalacji.
 - **Część `mailcow_mail.sh` wymagająca Dockera nie była uruchamiana na żywym mailcow.** Logikę parsowania (kolejka JSON, log Postfixa, statusy kontenerów, wiek backupu) przetestowano na atrapie polecenia `docker` z przykładowymi danymi. Po instalacji wykonaj testy `zabbix_get` z sekcji „Test lokalny”.

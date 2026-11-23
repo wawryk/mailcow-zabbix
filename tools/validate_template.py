@@ -74,6 +74,25 @@ for k in gitems:
     if k not in allkeys:
         errors.append(f"graph references unknown key {k!r}")
 
+for it in t["items"]:
+    if it.get("type") == "DEPENDENT" and it["master_item"]["key"] not in keys:
+        errors.append(f"dependent item {it['key']!r}: unknown master {it['master_item']['key']!r}")
+graph_names = {g["name"] for g in d.get("graphs", [])}
+proto_graph_names = {g["name"] for r in t["discovery_rules"] for g in r.get("graph_prototypes", [])}
+for db in t.get("dashboards", []):
+    for pg in db["pages"]:
+        for w in pg["widgets"]:
+            for f in w["fields"]:
+                v = f["value"]
+                if f["type"] == "GRAPH" and v["name"] not in graph_names:
+                    errors.append(f"widget {w['name']!r}: unknown graph {v['name']!r}")
+                elif f["type"] == "GRAPH_PROTOTYPE" and v["name"] not in proto_graph_names:
+                    errors.append(f"widget {w['name']!r}: unknown graph prototype {v['name']!r}")
+                elif f["type"] == "ITEM" and v["key"] not in keys:
+                    errors.append(f"widget {w['name']!r}: unknown item {v['key']!r}")
+            if int(w.get("x", 0)) + int(w["width"]) > 24:
+                errors.append(f"widget {w['name']!r} wider than 24-column grid")
+
 defined = {m["macro"] for m in t["macros"]}
 text = yaml.dump(d)
 used = set(re.findall(r"\{\$[A-Z0-9_.]+\}", text))

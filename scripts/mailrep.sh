@@ -28,9 +28,11 @@ case "$cmd" in
     else
       echo 2; exit 0                                    # np. nieustawione makro
     fi
-    out=$(dig +short +time=2 +tries=2 "$q.$zone" A @"$r" 2>/dev/null); rc=$?
-    res=$(echo "$out" | grep -E '^[0-9.]+$' | head -1)
-    if [ $rc -ne 0 ]; then echo 2
+    out=$(dig +time=2 +tries=2 "$q.$zone" A @"$r" 2>/dev/null); rc=$?
+    status=$(echo "$out" | grep -o 'status: [A-Z]*' | head -1 | awk '{print $2}')
+    res=$(echo "$out" | awk '!/^;/ && $4 == "A" {print $5; exit}')
+    if [ $rc -ne 0 ] || { [ "$status" != "NOERROR" ] && [ "$status" != "NXDOMAIN" ]; }; then
+      echo 2                                            # timeout, SERVFAIL, REFUSED - nie "czysto"
     elif [ -z "$res" ]; then echo 0                     # NXDOMAIN = brak wpisu
     elif [[ "$res" =~ ^127\.255\.255\. ]] || [[ "$res" == "127.0.0.1" ]] || [[ "$res" =~ ^127\.0\.0\.25[0-9]$ ]]; then
       echo 2                                            # odmowa zapytania / kod bledu listy
